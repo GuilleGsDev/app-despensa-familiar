@@ -1,5 +1,6 @@
 import DespensaView from './components/DespensaView';
 import RecetasView from './components/RecetasView';
+import MenuView from './components/MenuView';
 import React, { useState, useEffect } from 'react';
 import { supabase } from './lib/supabase';
 import LoginPin from './components/LoginPin';
@@ -85,12 +86,7 @@ export default function App() {
 
         {activeTab === 'recetas' && <RecetasView />}
 
-        {activeTab === 'menu' && (
-          <div className="space-y-4">
-            <h1 className="text-lg font-bold">Menú Semanal & Votos</h1>
-            <p className="text-xs text-stone-500">Aquí estará el calendario semanal y las votaciones.</p>
-          </div>
-        )}
+        {activeTab === 'menu' && <MenuView />}
       </main>
 
       {/* Barra de Navegación Inferior (Mobile Friendly) */}
