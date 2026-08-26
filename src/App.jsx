@@ -1,9 +1,9 @@
-import DespensaView from './components/DespensaView';
-import RecetasView from './components/RecetasView';
-import MenuView from './components/MenuView';
 import React, { useState, useEffect } from 'react';
 import { supabase } from './lib/supabase';
 import LoginPin from './components/LoginPin';
+import DespensaView from './components/DespensaView';
+import RecetasView from './components/RecetasView';
+import MenuView from './components/MenuView';
 import { Package, UtensilsCrossed, CalendarDays, LogOut, User } from 'lucide-react';
 
 export default function App() {
@@ -21,19 +21,40 @@ export default function App() {
 
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
-      if (session) cargarPerfil(session.user.id);
+      if (session) {
+        cargarPerfil(session.user.id);
+      } else {
+        setPerfil(null);
+      }
+      setLoading(false);
     });
 
     return () => subscription.unsubscribe();
   }, []);
 
   const cargarPerfil = async (userId) => {
-    const { data } = await supabase
-      .from('perfiles')
-      .select('*')
-      .eq('id', userId)
-      .single();
-    if (data) setPerfil(data);
+    try {
+      const { data } = await supabase
+        .from('perfiles')
+        .select('*')
+        .eq('id', userId)
+        .maybeSingle();
+
+      if (data && data.nombre) {
+        setPerfil(data);
+      } else {
+        setPerfil({
+          nombre: 'Guillermo',
+          rol: 'miembro',
+        });
+      }
+    } catch (err) {
+      console.error('Error al cargar perfil:', err);
+      setPerfil({
+        nombre: 'Guillermo',
+        rol: 'miembro',
+      });
+    }
   };
 
   const handleLogout = async () => {
@@ -54,6 +75,9 @@ export default function App() {
     return <LoginPin onLoginSuccess={(user) => cargarPerfil(user.id)} />;
   }
 
+  const nombreUsuario = perfil?.nombre || 'Guillermo';
+  const rolUsuario = perfil?.rol || 'miembro';
+
   return (
     <div className="min-h-screen bg-stone-50 text-stone-800 pb-20">
       {/* Header Superior */}
@@ -66,7 +90,7 @@ export default function App() {
             <h2 className="text-sm font-bold leading-tight">Despensa Hogar</h2>
             <p className="text-[10px] text-stone-500 flex items-center gap-1">
               <User className="w-2.5 h-2.5" />
-              {perfil?.nombre || 'Usuario'} ({perfil?.rol || 'miembro'})
+              {nombreUsuario} ({rolUsuario})
             </p>
           </div>
         </div>
@@ -83,13 +107,11 @@ export default function App() {
       {/* Contenido Dinámico según Tab */}
       <main className="max-w-md mx-auto p-4">
         {activeTab === 'despensa' && <DespensaView />}
-
-        {activeTab === 'recetas' && <RecetasView />}
-
+        {activeTab === 'recetas' && <RecetasView perfil={perfil} />}
         {activeTab === 'menu' && <MenuView />}
       </main>
 
-      {/* Barra de Navegación Inferior (Mobile Friendly) */}
+      {/* Barra de Navegación Inferior */}
       <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-stone-200 px-6 py-2 flex justify-around items-center z-20">
         <button
           onClick={() => setActiveTab('despensa')}

@@ -21,10 +21,25 @@ export default function DespensaView() {
 
   useEffect(() => {
     fetchItems();
+
+    // Suscripción Realtime a cambios en alimentos
+    const channel = supabase
+      .channel('alimentos_realtime')
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'alimentos' },
+        () => {
+          fetchItems();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const fetchItems = async () => {
-    setLoading(true);
     const { data, error } = await supabase
       .from('alimentos')
       .select('*')
@@ -37,9 +52,10 @@ export default function DespensaView() {
   };
 
   const modificarStock = async (id, delta, actual) => {
-    const nuevaCantidad = Math.max(0, Number(actual) + delta);
-    
-    // Actualización optimista en UI
+    const stockBase = Number(actual) || 0;
+    const nuevaCantidad = Math.max(0, parseFloat((stockBase + delta).toFixed(2)));
+
+    // Actualización optimista inmediata en UI
     setItems((prev) =>
       prev.map((it) => (it.id === id ? { ...it, cantidad_actual: nuevaCantidad } : it))
     );
@@ -50,7 +66,7 @@ export default function DespensaView() {
       .eq('id', id);
 
     if (error) {
-      // Revertir si falla
+      console.error('Error al actualizar stock:', error);
       fetchItems();
     }
   };
@@ -60,27 +76,34 @@ export default function DespensaView() {
     if (!nombre.trim()) return;
 
     setGuardando(true);
-    const { data, error } = await supabase
-      .from('alimentos')
-      .insert([
-        {
-          nombre: nombre.trim(),
-          categoria,
-          cantidad_actual: Number(cantidad),
-          unidad_medida: unidad,
-          cantidad_minima: Number(cantMin),
-        },
-      ])
-      .select();
+    try {
+      const { data, error } = await supabase
+        .from('alimentos')
+        .insert([
+          {
+            nombre: nombre.trim(),
+            categoria,
+            cantidad_actual: Number(cantidad) || 0,
+            unidad_medida: unidad,
+            cantidad_minima: Number(cantMin) || 0,
+          },
+        ])
+        .select();
 
-    if (!error && data) {
-      setItems((prev) => [...prev, ...data].sort((a, b) => a.nombre.localeCompare(b.nombre)));
-      setNombre('');
-      setCantidad(1);
-      setCantMin(1);
-      setMostrarModal(false);
+      if (error) {
+        alert(`Error al guardar: ${error.message}`);
+      } else if (data && data.length > 0) {
+        setNombre('');
+        setCantidad(1);
+        setCantMin(1);
+        setMostrarModal(false);
+        fetchItems();
+      }
+    } catch (err) {
+      alert(`Error: ${err.message}`);
+    } finally {
+      setGuardando(false);
     }
-    setGuardando(false);
   };
 
   const itemsFiltrados = items.filter((item) => {
@@ -91,7 +114,7 @@ export default function DespensaView() {
 
   return (
     <div className="space-y-4">
-      {/* Barra superior de acciones */}
+      {/* Barra de búsqueda y botón */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
           <Search className="w-4 h-4 absolute left-3 top-3 text-stone-400" />
@@ -112,7 +135,7 @@ export default function DespensaView() {
         </button>
       </div>
 
-      {/* Selector horizontal de categorías */}
+      {/* Categorías */}
       <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
         {CATEGORIAS.map((cat) => (
           <button
@@ -129,7 +152,7 @@ export default function DespensaView() {
         ))}
       </div>
 
-      {/* Lista de Alimentos */}
+      {/* Listado */}
       {loading ? (
         <div className="py-12 flex flex-col items-center justify-center text-stone-400 gap-2">
           <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
@@ -144,7 +167,10 @@ export default function DespensaView() {
       ) : (
         <div className="space-y-2">
           {itemsFiltrados.map((item) => {
-            const stockBajo = Number(item.cantidad_actual) <= Number(item.cantidad_minima);
+            const stockActualNum = Number(item.cantidad_actual ?? 0);
+            const stockMinNum = Number(item.cantidad_minima ?? 0);
+            const stockBajo = stockActualNum <= stockMinNum;
+
             return (
               <div
                 key={item.id}
@@ -161,23 +187,23 @@ export default function DespensaView() {
                     )}
                   </div>
                   <p className="text-[11px] text-stone-400">
-                    {item.categoria} • Mínimo: {item.cantidad_minima} {item.unidad_medida}
+                    {item.categoria} • Mínimo: {stockMinNum} {item.unidad_medida}
                   </p>
                 </div>
 
-                {/* Controles + y - */}
                 <div className="flex items-center gap-2 bg-stone-50 p-1 rounded-xl border border-stone-200 shrink-0">
                   <button
-                    onClick={() => modificarStock(item.id, -1, item.cantidad_actual)}
+                    onClick={() => modificarStock(item.id, -1, stockActualNum)}
                     className="w-7 h-7 flex items-center justify-center bg-white hover:bg-stone-200 text-stone-700 rounded-lg shadow-2xs active:scale-95 transition"
                   >
                     <Minus className="w-3.5 h-3.5" />
                   </button>
-                  <span className="min-w-10 text-center text-xs font-bold text-stone-800">
-                    {item.cantidad_actual} <span className="text-[10px] font-normal text-stone-500">{item.unidad_medida}</span>
+                  <span className="min-w-[45px] text-center text-xs font-bold text-stone-800">
+                    {stockActualNum}{' '}
+                    <span className="text-[10px] font-normal text-stone-500">{item.unidad_medida}</span>
                   </span>
                   <button
-                    onClick={() => modificarStock(item.id, 1, item.cantidad_actual)}
+                    onClick={() => modificarStock(item.id, 1, stockActualNum)}
                     className="w-7 h-7 flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow-2xs active:scale-95 transition"
                   >
                     <Plus className="w-3.5 h-3.5" />
@@ -189,7 +215,7 @@ export default function DespensaView() {
         </div>
       )}
 
-      {/* Modal para Agregar Producto */}
+      {/* Modal */}
       {mostrarModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
           <div className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 shadow-xl border border-stone-200">
@@ -241,7 +267,7 @@ export default function DespensaView() {
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-xs font-semibold text-stone-600 mb-1">Stock Actual</label>
+                  <label className="block text-xs font-semibold text-stone-600 mb-1">Stock Inicial</label>
                   <input
                     type="number"
                     min="0"

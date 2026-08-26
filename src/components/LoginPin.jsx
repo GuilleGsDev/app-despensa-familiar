@@ -18,19 +18,16 @@ export default function LoginPin({ onLoginSuccess }) {
     }
 
     setLoading(true);
-    console.log("Intentando login con:", email.trim().toLowerCase());
 
     const { data, error } = await supabase.auth.signInWithPassword({
       email: email.trim().toLowerCase(),
       password: pin,
     });
 
-    console.log("Respuesta de Supabase Auth:", { data, error });
-
     if (error) {
-      setErrorMsg(`Error [${error.status || 'Auth'}]: ${error.message}`);
+      setErrorMsg('Credenciales incorrectas. Verifica tu correo y PIN.');
     } else if (data?.user) {
-      onLoginSuccess(data.user);
+      if (onLoginSuccess) onLoginSuccess(data.user);
     }
     setLoading(false);
   };
@@ -56,8 +53,8 @@ export default function LoginPin({ onLoginSuccess }) {
         <form onSubmit={handleLogin} className="space-y-4">
           <div>
             <label className="block text-xs font-semibold text-stone-600 mb-1">Correo electrónico</label>
-            <div className="relative">
-              <Mail className="w-4 h-4 absolute left-3 top-3 text-stone-400" />
+            <div className="relative flex items-center">
+              <Mail className="w-4 h-4 absolute left-3 text-stone-400 pointer-events-none" />
               <input
                 type="email"
                 required
@@ -79,14 +76,14 @@ export default function LoginPin({ onLoginSuccess }) {
               value={pin}
               onChange={(e) => setPin(e.target.value.replace(/\D/g, ''))}
               placeholder="••••••"
-              className="w-full text-center tracking-[0.5em] text-lg font-bold py-2 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition"
+              className="w-full text-center tracking-[0.5em] text-lg font-bold py-2 bg-stone-50 border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:bg-white transition font-mono"
             />
           </div>
 
           <button
             type="submit"
             disabled={loading}
-            className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-sm rounded-xl transition shadow-sm disabled:opacity-50 flex items-center justify-center gap-2"
+            className="w-full py-2.5 px-4 bg-emerald-600 hover:bg-emerald-700 text-white font-medium text-sm rounded-xl transition shadow-sm disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
           >
             {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Entrar a la app'}
           </button>
