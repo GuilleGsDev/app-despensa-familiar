@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { Utensils, CheckCircle2, XCircle, Clock, Users, PlusCircle, Loader2, ChefHat, Trash2 } from 'lucide-react';
+import { Clock, Users, PlusCircle, Loader2, ChefHat, Trash2, Edit3, X } from 'lucide-react';
 
 export default function RecetasView() {
   const [recetas, setRecetas] = useState([]);
@@ -8,8 +8,9 @@ export default function RecetasView() {
   const [loading, setLoading] = useState(true);
   const [mostrarModal, setMostrarModal] = useState(false);
   const [guardando, setGuardando] = useState(false);
+  const [idEditando, setIdEditando] = useState(null);
 
-  // Formulario nueva receta
+  // Formulario receta
   const [nombre, setNombre] = useState('');
   const [tiempo, setTiempo] = useState(30);
   const [porciones, setPorciones] = useState(2);
@@ -17,10 +18,20 @@ export default function RecetasView() {
 
   useEffect(() => {
     cargarDatos();
+
+    const channel = supabase
+      .channel('recetas_catalog_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'alimentos' }, () => cargarDatos())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'recetas' }, () => cargarDatos())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'receta_ingredientes' }, () => cargarDatos())
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, []);
 
   const cargarDatos = async () => {
-    setLoading(true);
     const { data: dataAlimentos } = await supabase
       .from('alimentos')
       .select('*')
@@ -39,7 +50,6 @@ export default function RecetasView() {
           alimentos (
             id,
             nombre,
-            cantidad_actual,
             unidad_medida
           )
         )
@@ -50,21 +60,32 @@ export default function RecetasView() {
     setLoading(false);
   };
 
-  const eliminarReceta = async (id, nombreReceta) => {
-    if (!confirm(`¿Eliminar la receta "${nombreReceta}"?`)) return;
+  const abrirModalCrear = () => {
+    setIdEditando(null);
+    setNombre('');
+    setTiempo(30);
+    setPorciones(2);
+    setIngredientes([{ alimento_id: '', cantidad_requerida: 1 }]);
+    setMostrarModal(true);
+  };
 
-    // Optimista en UI
-    setRecetas((prev) => prev.filter((r) => r.id !== id));
+  const abrirModalEditar = (receta) => {
+    setIdEditando(receta.id);
+    setNombre(receta.nombre || '');
+    setTiempo(receta.tiempo_minutos || 30);
+    setPorciones(receta.porciones || 2);
 
-    const { error } = await supabase
-      .from('recetas')
-      .delete()
-      .eq('id', id);
-
-    if (error) {
-      alert(`Error al eliminar: ${error.message}`);
-      cargarDatos();
+    if (receta.receta_ingredientes && receta.receta_ingredientes.length > 0) {
+      setIngredientes(
+        receta.receta_ingredientes.map((ri) => ({
+          alimento_id: ri.alimento_id,
+          cantidad_requerida: ri.cantidad_requerida,
+        }))
+      );
+    } else {
+      setIngredientes([{ alimento_id: '', cantidad_requerida: 1 }]);
     }
+    setMostrarModal(true);
   };
 
   const agregarFilaIngrediente = () => {
@@ -81,7 +102,7 @@ export default function RecetasView() {
     setIngredientes(ingredientes.filter((_, i) => i !== index));
   };
 
-  const handleCrearReceta = async (e) => {
+  const handleGuardarReceta = async (e) => {
     e.preventDefault();
     if (!nombre.trim() || ingredientes.some((i) => !i.alimento_id)) {
       alert('Por favor selecciona todos los alimentos requeridos.');
@@ -90,57 +111,74 @@ export default function RecetasView() {
 
     setGuardando(true);
     try {
-      const { data: recData, error: recError } = await supabase
-        .from('recetas')
-        .insert([{ nombre: nombre.trim(), tiempo_minutos: Number(tiempo), porciones: Number(porciones) }])
-        .select()
-        .single();
+      if (idEditando) {
+        // Actualizar receta existente
+        const { error: recError } = await supabase
+          .from('recetas')
+          .update({
+            nombre: nombre.trim(),
+            tiempo_minutos: Number(tiempo),
+            porciones: Number(porciones),
+          })
+          .eq('id', idEditando);
 
-      if (recError) throw recError;
+        if (recError) throw recError;
 
-      const payloadIngredientes = ingredientes.map((i) => ({
-        receta_id: recData.id,
-        alimento_id: i.alimento_id,
-        cantidad_requerida: Number(i.cantidad_requerida),
-      }));
+        // Reemplazar ingredientes
+        await supabase.from('receta_ingredientes').delete().eq('receta_id', idEditando);
 
-      const { error: ingError } = await supabase
-        .from('receta_ingredientes')
-        .insert(payloadIngredientes);
+        const payloadIngredientes = ingredientes.map((i) => ({
+          receta_id: idEditando,
+          alimento_id: i.alimento_id,
+          cantidad_requerida: Number(i.cantidad_requerida),
+        }));
 
-      if (ingError) throw ingError;
+        const { error: ingError } = await supabase
+          .from('receta_ingredientes')
+          .insert(payloadIngredientes);
 
-      setNombre('');
-      setTiempo(30);
-      setPorciones(2);
-      setIngredientes([{ alimento_id: '', cantidad_requerida: 1 }]);
+        if (ingError) throw ingError;
+      } else {
+        // Crear nueva receta
+        const { data: recData, error: recError } = await supabase
+          .from('recetas')
+          .insert([{ nombre: nombre.trim(), tiempo_minutos: Number(tiempo), porciones: Number(porciones) }])
+          .select()
+          .single();
+
+        if (recError) throw recError;
+
+        const payloadIngredientes = ingredientes.map((i) => ({
+          receta_id: recData.id,
+          alimento_id: i.alimento_id,
+          cantidad_requerida: Number(i.cantidad_requerida),
+        }));
+
+        const { error: ingError } = await supabase
+          .from('receta_ingredientes')
+          .insert(payloadIngredientes);
+
+        if (ingError) throw ingError;
+      }
+
       setMostrarModal(false);
       cargarDatos();
     } catch (err) {
-      alert(`Error al crear receta: ${err.message}`);
+      alert(`Error al guardar receta: ${err.message}`);
     } finally {
       setGuardando(false);
     }
   };
 
-  const cocinarReceta = async (receta) => {
-    if (!confirm(`¿Deseas descontar los ingredientes de "${receta.nombre}" del inventario?`)) return;
+  const eliminarReceta = async (id, nombreReceta) => {
+    if (!confirm(`¿Eliminar la receta "${nombreReceta}"?`)) return;
 
-    try {
-      for (const item of receta.receta_ingredientes) {
-        const actual = Number(item.alimentos?.cantidad_actual || 0);
-        const req = Number(item.cantidad_requerida);
-        const nuevoStock = Math.max(0, actual - req);
+    setRecetas((prev) => prev.filter((r) => r.id !== id));
+    const { error } = await supabase.from('recetas').delete().eq('id', id);
 
-        await supabase
-          .from('alimentos')
-          .update({ cantidad_actual: nuevoStock })
-          .eq('id', item.alimento_id);
-      }
-      alert('¡Ingredientes descontados con éxito!');
+    if (error) {
+      alert(`Error al eliminar: ${error.message}`);
       cargarDatos();
-    } catch (err) {
-      alert(`Error al descontar: ${err.message}`);
     }
   };
 
@@ -148,9 +186,9 @@ export default function RecetasView() {
     <div className="space-y-4">
       {/* Barra superior */}
       <div className="flex items-center justify-between">
-        <h1 className="text-lg font-bold text-stone-900">Recetario Familiar</h1>
+        <h1 className="text-lg font-bold text-stone-900">Catálogo de Recetas</h1>
         <button
-          onClick={() => setMostrarModal(true)}
+          onClick={abrirModalCrear}
           className="p-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-sm transition flex items-center gap-1.5 text-xs font-semibold"
         >
           <PlusCircle className="w-4 h-4" />
@@ -158,117 +196,97 @@ export default function RecetasView() {
         </button>
       </div>
 
-      {/* Listado */}
+      {/* Listado de Recetas */}
       {loading ? (
         <div className="py-12 flex flex-col items-center justify-center text-stone-400 gap-2">
           <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
-          <p className="text-xs">Calculando disponibilidad de ingredientes...</p>
+          <p className="text-xs">Cargando recetas...</p>
         </div>
       ) : recetas.length === 0 ? (
         <div className="py-12 text-center bg-white rounded-2xl border border-stone-200 p-6">
           <ChefHat className="w-10 h-10 text-stone-300 mx-auto mb-2" />
           <p className="text-sm font-semibold text-stone-700">No hay recetas registradas</p>
-          <p className="text-xs text-stone-400 mt-1">Crea tus platos favoritos para verificar ingredientes.</p>
+          <p className="text-xs text-stone-400 mt-1">Crea tus platos favoritos para usarlos en el menú semanal.</p>
         </div>
       ) : (
         <div className="space-y-3">
-          {recetas.map((receta) => {
-            const faltantes = (receta.receta_ingredientes || []).filter(
-              (ri) => Number(ri.alimentos?.cantidad_actual || 0) < Number(ri.cantidad_requerida)
-            );
-            const tieneIngredientes = (receta.receta_ingredientes || []).length > 0;
-            const sePuedeCocinar = tieneIngredientes && faltantes.length === 0;
+          {recetas.map((receta) => (
+            <div
+              key={receta.id}
+              className="bg-white p-4 rounded-2xl border border-stone-200 shadow-sm space-y-3"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h3 className="text-base font-bold text-stone-900">{receta.nombre}</h3>
+                  <div className="flex items-center gap-3 text-xs text-stone-400 mt-0.5">
+                    <span className="flex items-center gap-1">
+                      <Clock className="w-3.5 h-3.5" />
+                      {receta.tiempo_minutos || 30} min
+                    </span>
+                    <span className="flex items-center gap-1">
+                      <Users className="w-3.5 h-3.5" />
+                      {receta.porciones || 2} porciones
+                    </span>
+                  </div>
+                </div>
 
-            return (
-              <div
-                key={receta.id}
-                className="bg-white p-4 rounded-2xl border border-stone-200 shadow-sm space-y-3"
-              >
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <h3 className="text-base font-bold text-stone-900">{receta.nombre}</h3>
-                    <div className="flex items-center gap-3 text-xs text-stone-400 mt-0.5">
-                      <span className="flex items-center gap-1">
-                        <Clock className="w-3.5 h-3.5" />
-                        {receta.tiempo_minutos || 30} min
-                      </span>
-                      <span className="flex items-center gap-1">
-                        <Users className="w-3.5 h-3.5" />
-                        {receta.porciones || 2} porciones
+                <div className="flex items-center gap-1">
+                  <button
+                    onClick={() => abrirModalEditar(receta)}
+                    className="p-1.5 text-stone-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition"
+                    title="Editar receta"
+                  >
+                    <Edit3 className="w-4 h-4" />
+                  </button>
+
+                  <button
+                    onClick={() => eliminarReceta(receta.id, receta.nombre)}
+                    className="p-1.5 text-stone-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
+                    title="Eliminar receta"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Ingredientes de la receta */}
+              <div className="bg-stone-50 rounded-xl p-2.5 space-y-1 text-xs">
+                <p className="font-semibold text-stone-600 mb-1">Ingredientes requeridos:</p>
+                {(receta.receta_ingredientes || []).length === 0 ? (
+                  <p className="text-stone-400 italic">No se especificaron ingredientes.</p>
+                ) : (
+                  receta.receta_ingredientes.map((ri) => (
+                    <div key={ri.id} className="flex justify-between items-center text-stone-700">
+                      <span>{ri.alimentos?.nombre || 'Alimento no encontrado'}</span>
+                      <span className="font-mono text-stone-500">
+                        {ri.cantidad_requerida} {ri.alimentos?.unidad_medida}
                       </span>
                     </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    {/* Badge de estado */}
-                    {sePuedeCocinar ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-emerald-50 text-emerald-700 text-xs font-semibold border border-emerald-200">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        Disponible
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-rose-50 text-rose-700 text-xs font-semibold border border-rose-200">
-                        <XCircle className="w-3.5 h-3.5" />
-                        {!tieneIngredientes ? 'Sin ingredientes' : `Faltan ${faltantes.length}`}
-                      </span>
-                    )}
-
-                    {/* Botón eliminar receta */}
-                    <button
-                      onClick={() => eliminarReceta(receta.id, receta.nombre)}
-                      className="p-1.5 text-stone-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                      title="Eliminar receta"
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-
-                {/* Lista de ingredientes */}
-                <div className="bg-stone-50 rounded-xl p-2.5 space-y-1 text-xs">
-                  <p className="font-semibold text-stone-600 mb-1">Ingredientes requeridos:</p>
-                  {(receta.receta_ingredientes || []).length === 0 ? (
-                    <p className="text-stone-400 italic">No se especificaron ingredientes.</p>
-                  ) : (
-                    receta.receta_ingredientes.map((ri) => {
-                      const stock = Number(ri.alimentos?.cantidad_actual || 0);
-                      const req = Number(ri.cantidad_requerida);
-                      const suficiente = stock >= req;
-
-                      return (
-                        <div key={ri.id} className="flex justify-between items-center text-stone-700">
-                          <span>{ri.alimentos?.nombre || 'Alimento no encontrado'}</span>
-                          <span className={`font-mono ${suficiente ? 'text-stone-500' : 'text-rose-600 font-bold'}`}>
-                            {req} / {stock} {ri.alimentos?.unidad_medida}
-                          </span>
-                        </div>
-                      );
-                    })
-                  )}
-                </div>
-
-                {/* Botón de acción */}
-                <button
-                  onClick={() => cocinarReceta(receta)}
-                  disabled={!sePuedeCocinar}
-                  className="w-full py-2 bg-emerald-600 hover:bg-emerald-700 disabled:bg-stone-100 disabled:text-stone-400 text-white font-medium text-xs rounded-xl shadow-xs transition flex items-center justify-center gap-1.5"
-                >
-                  <ChefHat className="w-4 h-4" />
-                  <span>{sePuedeCocinar ? 'Cocinar plato (Descontar stock)' : 'Faltan ingredientes'}</span>
-                </button>
+                  ))
+                )}
               </div>
-            );
-          })}
+            </div>
+          ))}
         </div>
       )}
 
-      {/* Modal Nueva Receta */}
+      {/* Modal Crear / Editar Receta */}
       {mostrarModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
           <div className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 shadow-xl border border-stone-200 max-h-[90vh] overflow-y-auto">
-            <h2 className="text-base font-bold text-stone-900 mb-4">Nueva Receta</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-base font-bold text-stone-900">
+                {idEditando ? 'Modificar Receta' : 'Nueva Receta'}
+              </h2>
+              <button
+                onClick={() => setMostrarModal(false)}
+                className="p-1 text-stone-400 hover:text-stone-600 rounded-lg"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
-            <form onSubmit={handleCrearReceta} className="space-y-3">
+            <form onSubmit={handleGuardarReceta} className="space-y-3">
               <div>
                 <label className="block text-xs font-semibold text-stone-600 mb-1">Nombre del plato</label>
                 <input
@@ -307,7 +325,6 @@ export default function RecetasView() {
                 </div>
               </div>
 
-              {/* Selector de ingredientes */}
               <div className="pt-2">
                 <div className="flex items-center justify-between mb-2">
                   <label className="block text-xs font-semibold text-stone-600">Ingredientes requeridos</label>
@@ -375,7 +392,7 @@ export default function RecetasView() {
                   disabled={guardando}
                   className="flex-1 py-2.5 text-white bg-emerald-600 hover:bg-emerald-700 font-medium text-xs rounded-xl shadow-sm transition disabled:opacity-50 flex items-center justify-center gap-1"
                 >
-                  {guardando ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Guardar Receta'}
+                  {guardando ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Guardar'}
                 </button>
               </div>
             </form>

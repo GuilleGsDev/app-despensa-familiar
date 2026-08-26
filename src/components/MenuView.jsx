@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { CalendarDays, ThumbsUp, Plus, Trash2, Loader2, ChevronLeft, ChevronRight, Utensils } from 'lucide-react';
+import { CalendarDays, ThumbsUp, Plus, Trash2, Loader2, ChevronLeft, ChevronRight, ChefHat, CheckCircle2, AlertCircle } from 'lucide-react';
 
 const DIAS_SEMANA = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const TIPOS_COMIDA = [
@@ -12,22 +12,19 @@ const TIPOS_COMIDA = [
 export default function MenuView() {
   const [recetas, setRecetas] = useState([]);
   const [menuItems, setMenuItems] = useState([]);
+  const [alimentos, setAlimentos] = useState([]);
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState(null);
 
-  // Selector de día activo (0 = Lunes, 6 = Domingo)
   const [diaOffset, setDiaOffset] = useState(0);
-
-  // Modal para asignar receta a un bloque
   const [modalAbierto, setModalAbierto] = useState(false);
   const [comidaSeleccionada, setComidaSeleccionada] = useState('almuerzo');
   const [recetaId, setRecetaId] = useState('');
   const [guardando, setGuardando] = useState(false);
 
-  // Calcular la fecha del día actual de la semana
   const getFechaCalculada = (offset) => {
     const hoy = new Date();
-    const diaActual = hoy.getDay(); // 0 = Domingo
+    const diaActual = hoy.getDay();
     const distLunes = (diaActual + 6) % 7;
     const lunes = new Date(hoy);
     lunes.setDate(hoy.getDate() - distLunes + offset);
@@ -38,31 +35,64 @@ export default function MenuView() {
 
   useEffect(() => {
     cargarDatos();
+
+    const channel = supabase
+      .channel('menu_realtime_sync')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_semanal' }, () => cargarDatos())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'votos_menu' }, () => cargarDatos())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'alimentos' }, () => cargarDatos())
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [fechaActual]);
 
   const cargarDatos = async () => {
-    setLoading(true);
     const { data: { user } } = await supabase.auth.getUser();
     if (user) setUserId(user.id);
 
-    // Cargar todas las recetas disponibles
+    const { data: alimData } = await supabase.from('alimentos').select('*');
+    if (alimData) setAlimentos(alimData);
+
     const { data: recData } = await supabase
       .from('recetas')
-      .select('id, nombre, tiempo_minutos, porciones')
+      .select(`
+        id, 
+        nombre, 
+        tiempo_minutos, 
+        porciones,
+        receta_ingredientes (
+          id,
+          alimento_id,
+          cantidad_requerida
+        )
+      `)
       .order('nombre');
     if (recData) setRecetas(recData);
 
-    // Cargar las comidas del día seleccionado con recetas y votos
     const { data: menuData } = await supabase
       .from('menu_semanal')
       .select(`
         id,
         fecha,
         tipo_comida,
+        receta_id,
         recetas (
           id,
           nombre,
-          tiempo_minutos
+          tiempo_minutos,
+          receta_ingredientes (
+            id,
+            alimento_id,
+            cantidad_requerida,
+            alimentos (
+              id,
+              nombre,
+              cantidad_actual,
+              unidad_medida
+            )
+          )
         ),
         votos_menu (
           id,
@@ -114,6 +144,30 @@ export default function MenuView() {
     cargarDatos();
   };
 
+  const handleCocinarPlato = async (itemMenu) => {
+    const receta = itemMenu.recetas;
+    if (!receta) return;
+
+    if (!confirm(`¿Confirmas que se cocinó "${receta.nombre}"? Se descontarán los ingredientes del inventario.`)) return;
+
+    try {
+      for (const ing of receta.receta_ingredientes || []) {
+        const alim = alimentos.find((a) => a.id === ing.alimento_id);
+        const actual = Number(alim?.cantidad_actual ?? 0);
+        const req = Number(ing.cantidad_requerida ?? 0);
+        const nuevoStock = Math.max(0, parseFloat((actual - req).toFixed(2)));
+
+        await supabase
+          .from('alimentos')
+          .update({ cantidad_actual: nuevoStock })
+          .eq('id', ing.alimento_id);
+      }
+      cargarDatos();
+    } catch (err) {
+      alert(`Error al descontar stock: ${err.message}`);
+    }
+  };
+
   const handleEliminarMenu = async (id) => {
     const { error } = await supabase.from('menu_semanal').delete().eq('id', id);
     if (!error) {
@@ -123,7 +177,7 @@ export default function MenuView() {
 
   return (
     <div className="space-y-4">
-      {/* Selector de Días de la Semana */}
+      {/* Selector de Días */}
       <div className="bg-white p-3 rounded-2xl border border-stone-200 shadow-sm">
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-2">
@@ -150,7 +204,7 @@ export default function MenuView() {
           </div>
         </div>
 
-        {/* Pestañas de días de la semana */}
+        {/* Pestañas de días */}
         <div className="grid grid-cols-7 gap-1">
           {DIAS_SEMANA.map((dia, idx) => (
             <button
@@ -168,7 +222,7 @@ export default function MenuView() {
         </div>
       </div>
 
-      {/* Bloques de Comida: Desayuno, Almuerzo, Cena */}
+      {/* Bloques de Comida */}
       {loading ? (
         <div className="py-12 flex flex-col items-center justify-center text-stone-400 gap-2">
           <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
@@ -198,47 +252,81 @@ export default function MenuView() {
                 </div>
 
                 {platos.length === 0 ? (
-                  <p className="text-xs text-stone-400 italic py-1">Sin platos asignados aún.</p>
+                  <p className="text-xs text-stone-400 italic py-1">Sin platos propuestos aún.</p>
                 ) : (
                   <div className="space-y-2">
                     {platos.map((item) => {
                       const votos = item.votos_menu || [];
                       const yaVoto = votos.some((v) => v.user_id === userId);
 
+                      const ingredientesReceta = item.recetas?.receta_ingredientes || [];
+                      const faltantes = ingredientesReceta.filter((ri) => {
+                        const alimentoEnStock = alimentos.find((a) => a.id === ri.alimento_id);
+                        return Number(alimentoEnStock?.cantidad_actual ?? 0) < Number(ri.cantidad_requerida);
+                      });
+                      const stockSuficiente = ingredientesReceta.length > 0 && faltantes.length === 0;
+
                       return (
                         <div
                           key={item.id}
-                          className="flex items-center justify-between p-2.5 bg-stone-50 rounded-xl border border-stone-200"
+                          className="p-3 bg-stone-50 rounded-xl border border-stone-200 space-y-2"
                         >
-                          <div className="min-w-0 flex-1">
-                            <h4 className="text-xs font-bold text-stone-800 truncate">
-                              {item.recetas?.nombre || 'Receta'}
-                            </h4>
-                            <p className="text-[10px] text-stone-400">
-                              {item.recetas?.tiempo_minutos} min
-                            </p>
+                          <div className="flex items-center justify-between">
+                            <div className="min-w-0 flex-1">
+                              <h4 className="text-xs font-bold text-stone-900 truncate">
+                                {item.recetas?.nombre || 'Receta'}
+                              </h4>
+                              <p className="text-[10px] text-stone-400">
+                                {item.recetas?.tiempo_minutos} min
+                              </p>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              {/* Votación */}
+                              <button
+                                onClick={() => handleVotar(item.id, yaVoto)}
+                                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition ${
+                                  yaVoto
+                                    ? 'bg-emerald-600 text-white shadow-xs'
+                                    : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-100'
+                                }`}
+                              >
+                                <ThumbsUp className="w-3 h-3" />
+                                <span>{votos.length}</span>
+                              </button>
+
+                              {/* Eliminar propuesta */}
+                              <button
+                                onClick={() => handleEliminarMenu(item.id)}
+                                className="p-1 text-stone-400 hover:text-rose-500 rounded-lg transition"
+                                title="Quitar del menú"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
                           </div>
 
-                          <div className="flex items-center gap-2">
-                            {/* Botón de Votación */}
-                            <button
-                              onClick={() => handleVotar(item.id, yaVoto)}
-                              className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition ${
-                                yaVoto
-                                  ? 'bg-emerald-600 text-white shadow-xs'
-                                  : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-100'
-                              }`}
-                            >
-                              <ThumbsUp className="w-3 h-3" />
-                              <span>{votos.length}</span>
-                            </button>
+                          {/* Botón Cocinar */}
+                          <div className="pt-1 border-t border-stone-200/60 flex items-center justify-between gap-2">
+                            <span className="text-[10px] text-stone-500">
+                              {stockSuficiente ? (
+                                <span className="text-emerald-700 font-medium flex items-center gap-1">
+                                  <CheckCircle2 className="w-3 h-3" /> Ingredientes listos
+                                </span>
+                              ) : (
+                                <span className="text-rose-600 font-medium flex items-center gap-1">
+                                  <AlertCircle className="w-3 h-3" /> Faltan insumos
+                                </span>
+                              )}
+                            </span>
 
-                            {/* Eliminar del menú */}
                             <button
-                              onClick={() => handleEliminarMenu(item.id)}
-                              className="p-1 text-stone-400 hover:text-rose-500 rounded-lg transition"
+                              onClick={() => handleCocinarPlato(item)}
+                              disabled={!stockSuficiente}
+                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-stone-200 disabled:text-stone-400 text-white font-medium text-[11px] rounded-lg transition flex items-center gap-1 shadow-2xs cursor-pointer disabled:cursor-not-allowed"
                             >
-                              <Trash2 className="w-3.5 h-3.5" />
+                              <ChefHat className="w-3 h-3" />
+                              <span>Cocinar plato</span>
                             </button>
                           </div>
                         </div>
@@ -252,7 +340,7 @@ export default function MenuView() {
         </div>
       )}
 
-      {/* Modal para Proponer Receta */}
+      {/* Modal Proponer Receta */}
       {modalAbierto && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
           <div className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 shadow-xl border border-stone-200">
@@ -298,7 +386,7 @@ export default function MenuView() {
                   disabled={guardando || !recetaId}
                   className="flex-1 py-2.5 text-white bg-emerald-600 hover:bg-emerald-700 font-medium text-xs rounded-xl shadow-sm transition disabled:opacity-50 flex items-center justify-center gap-1"
                 >
-                  {guardando ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Asignar al Menú'}
+                  {guardando ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Proponer al Menú'}
                 </button>
               </div>
             </form>
