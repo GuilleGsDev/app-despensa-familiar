@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { CalendarDays, ThumbsUp, Plus, Trash2, Loader2, ChevronLeft, ChevronRight, ChefHat, CheckCircle2, AlertCircle } from 'lucide-react';
+import { CalendarDays, ThumbsUp, Plus, Trash2, Loader2, ChevronLeft, ChevronRight, ChefHat, CheckCircle2, AlertCircle, RotateCcw } from 'lucide-react';
 
 const DIAS_SEMANA = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const TIPOS_COMIDA = [
@@ -16,22 +16,61 @@ export default function MenuView() {
   const [loading, setLoading] = useState(true);
   const [userId, setUserId] = useState(null);
 
-  const [diaOffset, setDiaOffset] = useState(0);
+  // Offset de semanas respecto a la semana actual (0 = semana actual, 1 = próxima semana, -1 = semana anterior)
+  const [semanaOffset, setSemanaOffset] = useState(0);
+
+  // Índice del día seleccionado en la semana activa (0 = Lunes, ..., 6 = Domingo)
+  // Inicializamos en el día de la semana actual
+  const [diaSeleccionadoIdx, setDiaSeleccionadoIdx] = useState(() => {
+    const diaHoy = new Date().getDay(); // 0 = Domingo, 1 = Lunes...
+    return (diaHoy + 6) % 7; // Convertir a 0 = Lunes, 6 = Domingo
+  });
+
   const [modalAbierto, setModalAbierto] = useState(false);
   const [comidaSeleccionada, setComidaSeleccionada] = useState('almuerzo');
   const [recetaId, setRecetaId] = useState('');
   const [guardando, setGuardando] = useState(false);
 
-  const getFechaCalculada = (offset) => {
-    const hoy = new Date();
-    const diaActual = hoy.getDay();
-    const distLunes = (diaActual + 6) % 7;
-    const lunes = new Date(hoy);
-    lunes.setDate(hoy.getDate() - distLunes + offset);
-    return lunes.toISOString().split('T')[0];
+  // Formato YYYY-MM-DD local seguro
+  const formatearFechaISO = (d) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, '0');
+    const day = String(d.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
   };
 
-  const fechaActual = getFechaCalculada(diaOffset);
+  // Obtener el objeto Date del Lunes de la semana activa
+  const getLunesDeSemana = (offsetSemanas) => {
+    const d = new Date();
+    const dia = d.getDay();
+    const distLunes = (dia + 6) % 7;
+    d.setDate(d.getDate() - distLunes + (offsetSemanas * 7));
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+
+  // Generar lista de los 7 días de la semana activa
+  const getDiasSemanaActiva = () => {
+    const lunes = getLunesDeSemana(semanaOffset);
+    return DIAS_SEMANA.map((nombre, i) => {
+      const fechaDia = new Date(lunes);
+      fechaDia.setDate(lunes.getDate() + i);
+      const iso = formatearFechaISO(fechaDia);
+      const hoyISO = formatearFechaISO(new Date());
+
+      return {
+        indice: i,
+        nombre,
+        numeroDia: fechaDia.getDate(),
+        iso,
+        esHoy: iso === hoyISO,
+      };
+    });
+  };
+
+  const diasSemana = getDiasSemanaActiva();
+  const diaActivo = diasSemana[diaSeleccionadoIdx] || diasSemana[0];
+  const fechaActual = diaActivo.iso;
 
   useEffect(() => {
     cargarDatos();
@@ -103,6 +142,12 @@ export default function MenuView() {
 
     if (menuData) setMenuItems(menuData);
     setLoading(false);
+  };
+
+  const handleIrAHoy = () => {
+    setSemanaOffset(0);
+    const diaHoy = new Date().getDay();
+    setDiaSeleccionadoIdx((diaHoy + 6) % 7);
   };
 
   const handleAgregarAlMenu = async (e) => {
@@ -177,52 +222,76 @@ export default function MenuView() {
 
   return (
     <div className="space-y-4">
-      {/* Selector de Días */}
-      <div className="bg-white p-3 rounded-2xl border border-stone-200 shadow-sm">
-        <div className="flex items-center justify-between mb-3">
+      {/* Navegador de Calendario Semanal */}
+      <div className="bg-white p-3.5 rounded-2xl border border-stone-200 shadow-sm space-y-3">
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <CalendarDays className="w-5 h-5 text-emerald-600" />
-            <h2 className="text-sm font-bold text-stone-900">
-              {DIAS_SEMANA[diaOffset]} ({fechaActual})
-            </h2>
+            <div>
+              <h2 className="text-sm font-bold text-stone-900 capitalize">
+                {diaActivo.nombre} {diaActivo.numeroDia}
+              </h2>
+              <p className="text-[10px] text-stone-400 font-mono">{fechaActual}</p>
+            </div>
           </div>
-          <div className="flex items-center gap-1">
+
+          <div className="flex items-center gap-1.5">
+            {/* Botón rápido para volver al día de hoy */}
+            {semanaOffset !== 0 && (
+              <button
+                onClick={handleIrAHoy}
+                className="px-2 py-1 rounded-lg text-[10px] font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 transition flex items-center gap-1"
+                title="Volver a la fecha actual"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>Hoy</span>
+              </button>
+            )}
+
+            {/* Navegación entre semanas */}
             <button
-              onClick={() => setDiaOffset((prev) => Math.max(0, prev - 1))}
-              disabled={diaOffset === 0}
-              className="p-1.5 rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-50 disabled:opacity-30"
+              onClick={() => setSemanaOffset((prev) => prev - 1)}
+              className="p-1.5 rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-50 transition"
+              title="Semana anterior"
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
             <button
-              onClick={() => setDiaOffset((prev) => Math.min(6, prev + 1))}
-              disabled={diaOffset === 6}
-              className="p-1.5 rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-50 disabled:opacity-30"
+              onClick={() => setSemanaOffset((prev) => prev + 1)}
+              className="p-1.5 rounded-lg border border-stone-200 text-stone-600 hover:bg-stone-50 transition"
+              title="Siguiente semana"
             >
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        {/* Pestañas de días */}
+        {/* Pestañas de los 7 días de la semana activa */}
         <div className="grid grid-cols-7 gap-1">
-          {DIAS_SEMANA.map((dia, idx) => (
-            <button
-              key={dia}
-              onClick={() => setDiaOffset(idx)}
-              className={`py-1.5 text-[11px] font-semibold rounded-xl transition ${
-                diaOffset === idx
-                  ? 'bg-emerald-600 text-white shadow-xs'
-                  : 'bg-stone-50 text-stone-500 hover:bg-stone-100'
-              }`}
-            >
-              {dia.substring(0, 2)}
-            </button>
-          ))}
+          {diasSemana.map((dia) => {
+            const activo = diaSeleccionadoIdx === dia.indice;
+
+            return (
+              <button
+                key={dia.iso}
+                onClick={() => setDiaSeleccionadoIdx(dia.indice)}
+                className={`py-2 flex flex-col items-center justify-center rounded-xl transition cursor-pointer ${
+                  activo
+                    ? 'bg-emerald-600 text-white shadow-xs font-bold'
+                    : dia.esHoy
+                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200 font-semibold'
+                    : 'bg-stone-50 text-stone-600 hover:bg-stone-100 font-medium'
+                }`}
+              >
+                <span className="text-[10px] uppercase">{dia.nombre.substring(0, 2)}</span>
+                <span className="text-xs">{dia.numeroDia}</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 
-      {/* Bloques de Comida */}
+      {/* Bloques de Comida: Desayuno, Almuerzo y Cena */}
       {loading ? (
         <div className="py-12 flex flex-col items-center justify-center text-stone-400 gap-2">
           <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
@@ -244,7 +313,7 @@ export default function MenuView() {
                       setComidaSeleccionada(tipo.key);
                       setModalAbierto(true);
                     }}
-                    className="flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg transition"
+                    className="flex items-center gap-1 text-xs font-semibold text-emerald-600 hover:text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-lg transition cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5" />
                     <span>Proponer</span>
@@ -282,10 +351,10 @@ export default function MenuView() {
                             </div>
 
                             <div className="flex items-center gap-2">
-                              {/* Votación */}
+                              {/* Votar */}
                               <button
                                 onClick={() => handleVotar(item.id, yaVoto)}
-                                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition ${
+                                className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                                   yaVoto
                                     ? 'bg-emerald-600 text-white shadow-xs'
                                     : 'bg-white border border-stone-200 text-stone-600 hover:bg-stone-100'
@@ -298,7 +367,7 @@ export default function MenuView() {
                               {/* Eliminar propuesta */}
                               <button
                                 onClick={() => handleEliminarMenu(item.id)}
-                                className="p-1 text-stone-400 hover:text-rose-500 rounded-lg transition"
+                                className="p-1 text-stone-400 hover:text-rose-500 rounded-lg transition cursor-pointer"
                                 title="Quitar del menú"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -340,7 +409,7 @@ export default function MenuView() {
         </div>
       )}
 
-      {/* Modal Proponer Receta */}
+      {/* Modal para Proponer Receta */}
       {modalAbierto && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
           <div className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 shadow-xl border border-stone-200">
@@ -377,14 +446,14 @@ export default function MenuView() {
                 <button
                   type="button"
                   onClick={() => setModalAbierto(false)}
-                  className="flex-1 py-2.5 text-stone-600 bg-stone-100 hover:bg-stone-200 font-medium text-xs rounded-xl transition"
+                  className="flex-1 py-2.5 text-stone-600 bg-stone-100 hover:bg-stone-200 font-medium text-xs rounded-xl transition cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={guardando || !recetaId}
-                  className="flex-1 py-2.5 text-white bg-emerald-600 hover:bg-emerald-700 font-medium text-xs rounded-xl shadow-sm transition disabled:opacity-50 flex items-center justify-center gap-1"
+                  className="flex-1 py-2.5 text-white bg-emerald-600 hover:bg-emerald-700 font-medium text-xs rounded-xl shadow-sm transition disabled:opacity-50 flex items-center justify-center gap-1 cursor-pointer"
                 >
                   {guardando ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Proponer al Menú'}
                 </button>
