@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { CalendarDays, ThumbsUp, Plus, Trash2, Loader2, ChevronLeft, ChevronRight, ChefHat, CheckCircle2, AlertCircle, RotateCcw } from 'lucide-react';
 
@@ -70,7 +70,65 @@ export default function MenuView() {
 
   const diasSemana = getDiasSemanaActiva();
   const diaActivo = diasSemana[diaSeleccionadoIdx] || diasSemana[0];
-  const fechaActual = diaActivo.iso;
+  const fechaActual = String(diaActivo.iso);
+
+  const cargarDatos = useCallback(() => {
+    return supabase.auth.getUser().then(async ({ data: { user } }) => {
+      if (user) setUserId(user.id);
+
+      const { data: alimData } = await supabase.from('alimentos').select('*');
+      if (alimData) setAlimentos(alimData);
+
+      const { data: recData } = await supabase
+        .from('recetas')
+        .select(`
+          id,
+          nombre,
+          tiempo_minutos,
+          porciones,
+          receta_ingredientes (
+            id,
+            alimento_id,
+            cantidad_requerida
+          )
+        `)
+        .order('nombre');
+      if (recData) setRecetas(recData);
+
+      const { data: menuData } = await supabase
+        .from('menu_semanal')
+        .select(`
+          id,
+          fecha,
+          tipo_comida,
+          receta_id,
+          recetas (
+            id,
+            nombre,
+            tiempo_minutos,
+            receta_ingredientes (
+              id,
+              alimento_id,
+              cantidad_requerida,
+              alimentos (
+                id,
+                nombre,
+                cantidad_actual,
+                unidad_medida
+              )
+            )
+          ),
+          votos_menu (
+            id,
+            user_id
+          )
+        `)
+        .eq('fecha', fechaActual);
+
+      if (menuData) setMenuItems(menuData);
+      setLoading(false);
+    });
+  }, [fechaActual]);
 
   useEffect(() => {
     cargarDatos();
@@ -85,64 +143,7 @@ export default function MenuView() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [fechaActual]);
-
-  const cargarDatos = async () => {
-    const { data: { user } } = await supabase.auth.getUser();
-    if (user) setUserId(user.id);
-
-    const { data: alimData } = await supabase.from('alimentos').select('*');
-    if (alimData) setAlimentos(alimData);
-
-    const { data: recData } = await supabase
-      .from('recetas')
-      .select(`
-        id, 
-        nombre, 
-        tiempo_minutos, 
-        porciones,
-        receta_ingredientes (
-          id,
-          alimento_id,
-          cantidad_requerida
-        )
-      `)
-      .order('nombre');
-    if (recData) setRecetas(recData);
-
-    const { data: menuData } = await supabase
-      .from('menu_semanal')
-      .select(`
-        id,
-        fecha,
-        tipo_comida,
-        receta_id,
-        recetas (
-          id,
-          nombre,
-          tiempo_minutos,
-          receta_ingredientes (
-            id,
-            alimento_id,
-            cantidad_requerida,
-            alimentos (
-              id,
-              nombre,
-              cantidad_actual,
-              unidad_medida
-            )
-          )
-        ),
-        votos_menu (
-          id,
-          user_id
-        )
-      `)
-      .eq('fecha', fechaActual);
-
-    if (menuData) setMenuItems(menuData);
-    setLoading(false);
-  };
+  }, [cargarDatos]);
 
   const handleIrAHoy = () => {
     setSemanaOffset(0);

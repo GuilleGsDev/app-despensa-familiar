@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { Clock, Users, PlusCircle, Loader2, ChefHat, Trash2, Edit3, X } from 'lucide-react';
 
@@ -16,6 +16,36 @@ export default function RecetasView() {
   const [porciones, setPorciones] = useState(2);
   const [ingredientes, setIngredientes] = useState([{ alimento_id: '', cantidad_requerida: 1 }]);
 
+  const cargarDatos = useCallback(() => {
+    return supabase
+      .from('alimentos')
+      .select('*')
+      .order('nombre', { ascending: true })
+      .then(async ({ data: dataAlimentos }) => {
+        if (dataAlimentos) setAlimentos(dataAlimentos);
+
+        const { data: dataRecetas } = await supabase
+          .from('recetas')
+          .select(`
+            *,
+            receta_ingredientes (
+              id,
+              alimento_id,
+              cantidad_requerida,
+              alimentos (
+                id,
+                nombre,
+                unidad_medida
+              )
+            )
+          `)
+          .order('nombre', { ascending: true });
+
+        if (dataRecetas) setRecetas(dataRecetas);
+        setLoading(false);
+      });
+  }, []);
+
   useEffect(() => {
     cargarDatos();
 
@@ -29,36 +59,7 @@ export default function RecetasView() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
-
-  const cargarDatos = async () => {
-    const { data: dataAlimentos } = await supabase
-      .from('alimentos')
-      .select('*')
-      .order('nombre', { ascending: true });
-
-    if (dataAlimentos) setAlimentos(dataAlimentos);
-
-    const { data: dataRecetas } = await supabase
-      .from('recetas')
-      .select(`
-        *,
-        receta_ingredientes (
-          id,
-          alimento_id,
-          cantidad_requerida,
-          alimentos (
-            id,
-            nombre,
-            unidad_medida
-          )
-        )
-      `)
-      .order('nombre', { ascending: true });
-
-    if (dataRecetas) setRecetas(dataRecetas);
-    setLoading(false);
-  };
+  }, [cargarDatos]);
 
   const abrirModalCrear = () => {
     setIdEditando(null);

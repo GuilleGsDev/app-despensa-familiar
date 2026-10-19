@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { Search, Plus, Minus, PlusCircle, AlertTriangle, PackageOpen, Loader2 } from 'lucide-react';
 
@@ -19,6 +19,19 @@ export default function DespensaView() {
   const [cantMin, setCantMin] = useState(1);
   const [guardando, setGuardando] = useState(false);
 
+  const fetchItems = useCallback(() => {
+    return supabase
+      .from('alimentos')
+      .select('*')
+      .order('nombre', { ascending: true })
+      .then(({ data, error }) => {
+        if (!error && data) {
+          setItems(data);
+        }
+        setLoading(false);
+      });
+  }, []);
+
   useEffect(() => {
     fetchItems();
 
@@ -37,19 +50,7 @@ export default function DespensaView() {
     return () => {
       supabase.removeChannel(channel);
     };
-  }, []);
-
-  const fetchItems = async () => {
-    const { data, error } = await supabase
-      .from('alimentos')
-      .select('*')
-      .order('nombre', { ascending: true });
-
-    if (!error && data) {
-      setItems(data);
-    }
-    setLoading(false);
-  };
+  }, [fetchItems]);
 
   const modificarStock = async (id, delta, actual) => {
     const stockBase = Number(actual) || 0;

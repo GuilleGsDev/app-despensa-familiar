@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from './lib/supabase';
 import LoginPin from './components/LoginPin';
 import DespensaView from './components/DespensaView';
@@ -11,6 +11,31 @@ export default function App() {
   const [perfil, setPerfil] = useState(null);
   const [activeTab, setActiveTab] = useState('menu');
   const [loading, setLoading] = useState(true);
+
+  const cargarPerfil = useCallback(async (user) => {
+    try {
+      const { data } = await supabase
+        .from('perfiles')
+        .select('*')
+        .eq('id', user.id)
+        .maybeSingle();
+
+      if (data && data.nombre) {
+        setPerfil(data);
+      } else {
+        // Si no tiene nombre registrado en la tabla, usa dinámicamente su correo
+        setPerfil({
+          nombre: user.email || 'Usuario',
+          rol: data?.rol || 'miembro',
+        });
+      }
+    } catch {
+      setPerfil({
+        nombre: user.email || 'Usuario',
+        rol: 'miembro',
+      });
+    }
+  }, []);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
@@ -30,32 +55,7 @@ export default function App() {
     });
 
     return () => subscription.unsubscribe();
-  }, []);
-
-  const cargarPerfil = async (user) => {
-    try {
-      const { data } = await supabase
-        .from('perfiles')
-        .select('*')
-        .eq('id', user.id)
-        .maybeSingle();
-
-      if (data && data.nombre) {
-        setPerfil(data);
-      } else {
-        // Si no tiene nombre registrado en la tabla, usa dinámicamente su correo
-        setPerfil({
-          nombre: user.email || 'Usuario',
-          rol: data?.rol || 'miembro',
-        });
-      }
-    } catch (err) {
-      setPerfil({
-        nombre: user.email || 'Usuario',
-        rol: 'miembro',
-      });
-    }
-  };
+  }, [cargarPerfil]);
 
   const handleLogout = async () => {
     await supabase.auth.signOut();
