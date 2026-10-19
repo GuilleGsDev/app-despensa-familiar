@@ -1,12 +1,16 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { Search, Plus, Minus, PlusCircle, AlertTriangle, PackageOpen, Loader2 } from 'lucide-react';
 
+import { esAdministrador } from '../lib/familia';
+import { useRealtimeQuery } from '../lib/useRealtimeQuery';
+
+const TABLAS_DESPENSA = ['alimentos'];
 const CATEGORIAS = ['Todos', 'Despensa', 'Refrigerador', 'Congelador', 'Verdulería', 'Limpieza'];
 
-export default function DespensaView() {
-  const [items, setItems] = useState([]);
-  const [loading, setLoading] = useState(true);
+export default function DespensaView({ perfil }) {
+  const admin = esAdministrador(perfil);
+  const [actualizando, setActualizando] = useState(false);
   const [busqueda, setBusqueda] = useState('');
   const [categoriaSel, setCategoriaSel] = useState('Todos');
   const [mostrarModal, setMostrarModal] = useState(false);
@@ -15,66 +19,40 @@ export default function DespensaView() {
   const [nombre, setNombre] = useState('');
   const [categoria, setCategoria] = useState('Despensa');
   const [cantidad, setCantidad] = useState(1);
-  const [unidad, setUnidad] = useState('un');
+  const [unidad, setUnidad] = useState('paq');
   const [cantMin, setCantMin] = useState(1);
   const [guardando, setGuardando] = useState(false);
 
-  const fetchItems = useCallback(() => {
-    return supabase
-      .from('alimentos')
-      .select('*')
-      .order('nombre', { ascending: true })
-      .then(({ data, error }) => {
-        if (!error && data) {
-          setItems(data);
-        }
-        setLoading(false);
-      });
+  const consultarItems = useCallback(async () => {
+    const { data, error } = await supabase.from('alimentos').select('*').order('nombre');
+    if (error) throw error;
+    return data;
   }, []);
-
-  useEffect(() => {
-    fetchItems();
-
-    // Suscripción Realtime a cambios en alimentos
-    const channel = supabase
-      .channel('alimentos_realtime')
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'alimentos' },
-        () => {
-          fetchItems();
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [fetchItems]);
+  const { data: items = [], error, loading, refresh: fetchItems } = useRealtimeQuery(
+    consultarItems, TABLAS_DESPENSA, 'alimentos_realtime'
+  );
 
   const modificarStock = async (id, delta, actual) => {
-    const stockBase = Number(actual) || 0;
-    const nuevaCantidad = Math.max(0, parseFloat((stockBase + delta).toFixed(2)));
-
-    // Actualización optimista inmediata en UI
-    setItems((prev) =>
-      prev.map((it) => (it.id === id ? { ...it, cantidad_actual: nuevaCantidad } : it))
-    );
-
-    const { error } = await supabase
-      .from('alimentos')
-      .update({ cantidad_actual: nuevaCantidad })
-      .eq('id', id);
-
-    if (error) {
-      console.error('Error al actualizar stock:', error);
-      fetchItems();
+    if (!admin || actualizando) return;
+    setActualizando(true);
+    try {
+      const nuevaCantidad = Math.max(0, Number((Number(actual) + delta).toFixed(2)));
+      const { data, error } = await supabase.from('alimentos')
+        .update({ cantidad_actual: nuevaCantidad }).eq('id', id)
+        .eq('cantidad_actual', actual).select('id');
+      if (error) throw error;
+      if (!data?.length) alert('El inventario cambió o no tienes permiso. Revisa la cantidad actualizada.');
+      await fetchItems();
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setActualizando(false);
     }
   };
 
   const handleCrearItem = async (e) => {
     e.preventDefault();
-    if (!nombre.trim()) return;
+    if (!admin || !nombre.trim()) return;
 
     setGuardando(true);
     try {
@@ -107,7 +85,7 @@ export default function DespensaView() {
     }
   };
 
-  const itemsFiltrados = items.filter((item) => {
+  const itemsFiltrados = (items || []).filter((item) => {
     const cumpleFiltro = categoriaSel === 'Todos' || item.categoria === categoriaSel;
     const cumpleBusqueda = item.nombre.toLowerCase().includes(busqueda.toLowerCase());
     return cumpleFiltro && cumpleBusqueda;
@@ -115,6 +93,8 @@ export default function DespensaView() {
 
   return (
     <div className="space-y-4">
+      <p className="text-xs text-stone-500">Inventario orientativo. Las cantidades se actualizan manualmente; confirmar una comida no las descuenta.</p>
+      {error && <p role="alert" className="text-sm text-rose-700">No se pudo cargar la despensa: {error} <button onClick={fetchItems}>Reintentar</button></p>}
       {/* Barra de búsqueda y botón */}
       <div className="flex items-center gap-2">
         <div className="relative flex-1">
@@ -127,13 +107,13 @@ export default function DespensaView() {
             className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-stone-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-emerald-500 transition shadow-sm"
           />
         </div>
-        <button
+        {admin && <button
           onClick={() => setMostrarModal(true)}
           className="p-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl shadow-sm transition flex items-center gap-1 text-xs font-semibold shrink-0"
         >
           <PlusCircle className="w-4 h-4" />
           <span>Agregar</span>
-        </button>
+        </button>}
       </div>
 
       {/* Categorías */}
@@ -194,6 +174,8 @@ export default function DespensaView() {
 
                 <div className="flex items-center gap-2 bg-stone-50 p-1 rounded-xl border border-stone-200 shrink-0">
                   <button
+                    hidden={!admin}
+                    disabled={actualizando}
                     onClick={() => modificarStock(item.id, -1, stockActualNum)}
                     className="w-7 h-7 flex items-center justify-center bg-white hover:bg-stone-200 text-stone-700 rounded-lg shadow-2xs active:scale-95 transition"
                   >
@@ -204,6 +186,8 @@ export default function DespensaView() {
                     <span className="text-[10px] font-normal text-stone-500">{item.unidad_medida}</span>
                   </span>
                   <button
+                    hidden={!admin}
+                    disabled={actualizando}
                     onClick={() => modificarStock(item.id, 1, stockActualNum)}
                     className="w-7 h-7 flex items-center justify-center bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg shadow-2xs active:scale-95 transition"
                   >
@@ -217,7 +201,7 @@ export default function DespensaView() {
       )}
 
       {/* Modal */}
-      {mostrarModal && (
+      {admin && mostrarModal && (
         <div className="fixed inset-0 bg-black/40 backdrop-blur-xs flex items-end sm:items-center justify-center p-0 sm:p-4 z-50">
           <div className="w-full sm:max-w-md bg-white rounded-t-3xl sm:rounded-3xl p-6 shadow-xl border border-stone-200">
             <h2 className="text-base font-bold text-stone-900 mb-4">Nuevo Alimento / Insumo</h2>
@@ -268,7 +252,7 @@ export default function DespensaView() {
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block text-xs font-semibold text-stone-600 mb-1">Stock Inicial</label>
+                  <label className="block text-xs font-semibold text-stone-600 mb-1">Cantidad aproximada</label>
                   <input
                     type="number"
                     min="0"
@@ -281,7 +265,7 @@ export default function DespensaView() {
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-stone-600 mb-1">Stock Mínimo (Alerta)</label>
+                  <label className="block text-xs font-semibold text-stone-600 mb-1">Mínimo orientativo</label>
                   <input
                     type="number"
                     min="0"

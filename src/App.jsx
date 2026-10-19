@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from './lib/supabase';
+import { esFamiliar } from './lib/familia';
 import LoginPin from './components/LoginPin';
 import DespensaView from './components/DespensaView';
 import RecetasView from './components/RecetasView';
@@ -14,26 +15,15 @@ export default function App() {
 
   const cargarPerfil = useCallback(async (user) => {
     try {
-      const { data } = await supabase
+      const { data, error } = await supabase
         .from('perfiles')
         .select('*')
         .eq('id', user.id)
         .maybeSingle();
 
-      if (data && data.nombre) {
-        setPerfil(data);
-      } else {
-        // Si no tiene nombre registrado en la tabla, usa dinámicamente su correo
-        setPerfil({
-          nombre: user.email || 'Usuario',
-          rol: data?.rol || 'miembro',
-        });
-      }
+      setPerfil(!error && data ? data : null);
     } catch {
-      setPerfil({
-        nombre: user.email || 'Usuario',
-        rol: 'miembro',
-      });
+      setPerfil(null);
     }
   }, []);
 
@@ -75,8 +65,9 @@ export default function App() {
     return <LoginPin onLoginSuccess={(user) => cargarPerfil(user)} />;
   }
 
-  const nombreUsuario = perfil?.nombre || session.user?.email || 'Usuario';
-  const rolUsuario = perfil?.rol || 'miembro';
+  const perfilActual = perfil?.id === session.user.id ? perfil : null;
+  const nombreUsuario = perfilActual?.nombre || session.user?.email || 'Usuario';
+  const rolUsuario = perfilActual?.rol || 'sin acceso';
 
   return (
     <div className="min-h-screen bg-stone-50 text-stone-800 pb-20">
@@ -106,9 +97,10 @@ export default function App() {
 
       {/* Contenido Dinámico según Tab */}
       <main className="max-w-md mx-auto p-4">
-        {activeTab === 'menu' && <MenuView />}
-        {activeTab === 'recetas' && <RecetasView perfil={perfil} />}
-        {activeTab === 'despensa' && <DespensaView />}
+        {!esFamiliar(perfilActual) && <p role="status" className="text-sm text-stone-600">Tu perfil familiar no está disponible o no tiene acceso. <button onClick={() => cargarPerfil(session.user)}>Reintentar</button></p>}
+        {esFamiliar(perfilActual) && activeTab === 'menu' && <MenuView perfil={perfilActual} />}
+        {esFamiliar(perfilActual) && activeTab === 'recetas' && <RecetasView perfil={perfilActual} />}
+        {esFamiliar(perfilActual) && activeTab === 'despensa' && <DespensaView perfil={perfilActual} />}
       </main>
 
       {/* Barra de Navegación Inferior */}

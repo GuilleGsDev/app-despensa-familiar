@@ -1,20 +1,22 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { CalendarDays, ThumbsUp, Plus, Trash2, Loader2, ChevronLeft, ChevronRight, ChefHat, CheckCircle2, AlertCircle, RotateCcw } from 'lucide-react';
+import { CalendarDays, ThumbsUp, Plus, Trash2, Loader2, ChevronLeft, ChevronRight, RotateCcw } from 'lucide-react';
 
+import { esAdministrador, disponibilidadIngrediente } from '../lib/familia';
+import { useRealtimeQuery } from '../lib/useRealtimeQuery';
+
+const TABLAS_MENU = ['menu_semanal', 'votos_menu', 'alimentos', 'recetas', 'receta_ingredientes', 'comidas_confirmadas'];
 const DIAS_SEMANA = ['Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'];
 const TIPOS_COMIDA = [
   { key: 'desayuno', label: 'Desayuno', color: 'bg-amber-50 border-amber-200 text-amber-800' },
   { key: 'almuerzo', label: 'Almuerzo', color: 'bg-emerald-50 border-emerald-200 text-emerald-800' },
-  { key: 'cena', label: 'Cena', color: 'bg-indigo-50 border-indigo-200 text-indigo-800' },
+  { key: 'once', label: 'Once', color: 'bg-indigo-50 border-indigo-200 text-indigo-800' },
 ];
 
-export default function MenuView() {
-  const [recetas, setRecetas] = useState([]);
-  const [menuItems, setMenuItems] = useState([]);
-  const [alimentos, setAlimentos] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [userId, setUserId] = useState(null);
+export default function MenuView({ perfil }) {
+  const userId = perfil.id;
+  const admin = esAdministrador(perfil);
+  const [ocupado, setOcupado] = useState(false);
 
   // Offset de semanas respecto a la semana actual (0 = semana actual, 1 = próxima semana, -1 = semana anterior)
   const [semanaOffset, setSemanaOffset] = useState(0);
@@ -72,78 +74,26 @@ export default function MenuView() {
   const diaActivo = diasSemana[diaSeleccionadoIdx] || diasSemana[0];
   const fechaActual = String(diaActivo.iso);
 
-  const cargarDatos = useCallback(() => {
-    return supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (user) setUserId(user.id);
-
-      const { data: alimData } = await supabase.from('alimentos').select('*');
-      if (alimData) setAlimentos(alimData);
-
-      const { data: recData } = await supabase
-        .from('recetas')
-        .select(`
-          id,
-          nombre,
-          tiempo_minutos,
-          porciones,
-          receta_ingredientes (
-            id,
-            alimento_id,
-            cantidad_requerida
-          )
-        `)
-        .order('nombre');
-      if (recData) setRecetas(recData);
-
-      const { data: menuData } = await supabase
-        .from('menu_semanal')
-        .select(`
-          id,
-          fecha,
-          tipo_comida,
-          receta_id,
-          recetas (
-            id,
-            nombre,
-            tiempo_minutos,
-            receta_ingredientes (
-              id,
-              alimento_id,
-              cantidad_requerida,
-              alimentos (
-                id,
-                nombre,
-                cantidad_actual,
-                unidad_medida
-              )
-            )
-          ),
-          votos_menu (
-            id,
-            user_id
-          )
-        `)
-        .eq('fecha', fechaActual);
-
-      if (menuData) setMenuItems(menuData);
-      setLoading(false);
-    });
+  const consultarMenu = useCallback(async () => {
+    const results = await Promise.all([
+      supabase.from('alimentos').select('*'),
+      supabase.from('recetas').select('id, nombre, tiempo_minutos').eq('archivada', false).order('nombre'),
+      supabase.from('menu_semanal').select(`
+        id, fecha, tipo_comida, receta_id, creado_por,
+        recetas (id, nombre, tiempo_minutos,
+          receta_ingredientes (id, alimento_id, cantidad_requerida, unidad_medida)),
+        votos_menu (id, user_id)
+      `).eq('fecha', fechaActual),
+      supabase.from('comidas_confirmadas').select('*').eq('fecha', fechaActual),
+    ]);
+    for (const result of results) if (result.error) throw result.error;
+    return { alimentos: results[0].data, recetas: results[1].data,
+      menuItems: results[2].data, confirmaciones: results[3].data };
   }, [fechaActual]);
-
-  useEffect(() => {
-    cargarDatos();
-
-    const channel = supabase
-      .channel('menu_realtime_sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'menu_semanal' }, () => cargarDatos())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'votos_menu' }, () => cargarDatos())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'alimentos' }, () => cargarDatos())
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [cargarDatos]);
+  const { data, error, loading, refresh: cargarDatos } = useRealtimeQuery(
+    consultarMenu, TABLAS_MENU, 'menu_realtime_sync'
+  );
+  const { alimentos = [], recetas = [], menuItems = [], confirmaciones = [] } = data || {};
 
   const handleIrAHoy = () => {
     setSemanaOffset(0);
@@ -156,73 +106,57 @@ export default function MenuView() {
     if (!recetaId) return;
 
     setGuardando(true);
-    const { error } = await supabase
-      .from('menu_semanal')
-      .insert([
-        {
-          fecha: fechaActual,
-          tipo_comida: comidaSeleccionada,
-          receta_id: recetaId,
-        },
-      ]);
-
-    if (!error) {
+    try {
+      const { error } = await supabase.from('menu_semanal').insert({
+        fecha: fechaActual, tipo_comida: comidaSeleccionada, receta_id: recetaId, creado_por: userId,
+      });
+      if (error) throw error;
       setModalAbierto(false);
       setRecetaId('');
-      cargarDatos();
-    } else {
-      alert(`Error al agendar: ${error.message}`);
+      await cargarDatos();
+    } catch (error) {
+      alert(`Error al proponer: ${error.message}`);
+    } finally {
+      setGuardando(false);
     }
-    setGuardando(false);
   };
 
-  const handleVotar = async (menuId, yaVoto) => {
-    if (yaVoto) {
-      await supabase
-        .from('votos_menu')
-        .delete()
-        .match({ menu_id: menuId, user_id: userId });
-    } else {
-      await supabase
-        .from('votos_menu')
-        .insert([{ menu_id: menuId, user_id: userId }]);
-    }
-    cargarDatos();
-  };
-
-  const handleCocinarPlato = async (itemMenu) => {
-    const receta = itemMenu.recetas;
-    if (!receta) return;
-
-    if (!confirm(`¿Confirmas que se cocinó "${receta.nombre}"? Se descontarán los ingredientes del inventario.`)) return;
-
+  const ejecutarCambio = async (operation) => {
+    if (ocupado) return;
+    setOcupado(true);
     try {
-      for (const ing of receta.receta_ingredientes || []) {
-        const alim = alimentos.find((a) => a.id === ing.alimento_id);
-        const actual = Number(alim?.cantidad_actual ?? 0);
-        const req = Number(ing.cantidad_requerida ?? 0);
-        const nuevoStock = Math.max(0, parseFloat((actual - req).toFixed(2)));
-
-        await supabase
-          .from('alimentos')
-          .update({ cantidad_actual: nuevoStock })
-          .eq('id', ing.alimento_id);
-      }
-      cargarDatos();
-    } catch (err) {
-      alert(`Error al descontar stock: ${err.message}`);
+      const { error } = await operation();
+      if (error) throw error;
+      await cargarDatos();
+    } catch (error) {
+      alert(error.message);
+    } finally {
+      setOcupado(false);
     }
   };
 
-  const handleEliminarMenu = async (id) => {
-    const { error } = await supabase.from('menu_semanal').delete().eq('id', id);
-    if (!error) {
-      setMenuItems((prev) => prev.filter((m) => m.id !== id));
-    }
+  const handleVotar = (menuId, yaVoto) => ejecutarCambio(() => yaVoto
+    ? supabase.from('votos_menu').delete().match({ menu_id: menuId, user_id: userId })
+    : supabase.from('votos_menu').insert({ menu_id: menuId, user_id: userId }));
+
+  const handleConfirmar = (item, confirmada) => {
+    if (!admin) return;
+    if (!confirm(confirmada ? '¿Retirar la confirmación?' : `¿Confirmar "${item.recetas?.nombre}" para esta comida?`)) return;
+    return ejecutarCambio(() => confirmada
+      ? supabase.from('comidas_confirmadas').delete().match({ fecha: item.fecha, tipo_comida: item.tipo_comida, propuesta_id: item.id })
+      : supabase.from('comidas_confirmadas').upsert({ fecha: item.fecha, tipo_comida: item.tipo_comida,
+        propuesta_id: item.id }, { onConflict: 'fecha,tipo_comida' }));
+  };
+
+  const handleEliminarMenu = (item) => {
+    if ((!admin && item.creado_por !== userId) || confirmaciones.some((c) => c.propuesta_id === item.id)) return;
+    if (!confirm('¿Retirar esta propuesta y sus votos?')) return;
+    return ejecutarCambio(() => supabase.from('menu_semanal').delete().eq('id', item.id));
   };
 
   return (
     <div className="space-y-4">
+      {error && <p role="alert" className="text-sm text-rose-700">No se pudo cargar el menú: {error} <button onClick={cargarDatos}>Reintentar</button></p>}
       {/* Navegador de Calendario Semanal */}
       <div className="bg-white p-3.5 rounded-2xl border border-stone-200 shadow-sm space-y-3">
         <div className="flex items-center justify-between">
@@ -292,7 +226,7 @@ export default function MenuView() {
         </div>
       </div>
 
-      {/* Bloques de Comida: Desayuno, Almuerzo y Cena */}
+      {/* Bloques de Comida: Desayuno, Almuerzo y Once */}
       {loading ? (
         <div className="py-12 flex flex-col items-center justify-center text-stone-400 gap-2">
           <Loader2 className="w-6 h-6 animate-spin text-emerald-600" />
@@ -330,11 +264,8 @@ export default function MenuView() {
                       const yaVoto = votos.some((v) => v.user_id === userId);
 
                       const ingredientesReceta = item.recetas?.receta_ingredientes || [];
-                      const faltantes = ingredientesReceta.filter((ri) => {
-                        const alimentoEnStock = alimentos.find((a) => a.id === ri.alimento_id);
-                        return Number(alimentoEnStock?.cantidad_actual ?? 0) < Number(ri.cantidad_requerida);
-                      });
-                      const stockSuficiente = ingredientesReceta.length > 0 && faltantes.length === 0;
+                      const confirmada = confirmaciones.some((c) => c.propuesta_id === item.id);
+                      const puedeRetirar = !confirmada && (admin || item.creado_por === userId);
 
                       return (
                         <div
@@ -344,7 +275,7 @@ export default function MenuView() {
                           <div className="flex items-center justify-between">
                             <div className="min-w-0 flex-1">
                               <h4 className="text-xs font-bold text-stone-900 truncate">
-                                {item.recetas?.nombre || 'Receta'}
+                                {item.recetas?.nombre || 'Receta'} {confirmada && <span className="text-emerald-700">· Confirmada</span>}
                               </h4>
                               <p className="text-[10px] text-stone-400">
                                 {item.recetas?.tiempo_minutos} min
@@ -354,6 +285,7 @@ export default function MenuView() {
                             <div className="flex items-center gap-2">
                               {/* Votar */}
                               <button
+                                disabled={ocupado}
                                 onClick={() => handleVotar(item.id, yaVoto)}
                                 className={`flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                                   yaVoto
@@ -366,38 +298,29 @@ export default function MenuView() {
                               </button>
 
                               {/* Eliminar propuesta */}
-                              <button
-                                onClick={() => handleEliminarMenu(item.id)}
+                              {puedeRetirar && <button
+                                disabled={ocupado}
+                                onClick={() => handleEliminarMenu(item)}
                                 className="p-1 text-stone-400 hover:text-rose-500 rounded-lg transition cursor-pointer"
                                 title="Quitar del menú"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              </button>}
                             </div>
                           </div>
 
-                          {/* Botón Cocinar */}
-                          <div className="pt-1 border-t border-stone-200/60 flex items-center justify-between gap-2">
-                            <span className="text-[10px] text-stone-500">
-                              {stockSuficiente ? (
-                                <span className="text-emerald-700 font-medium flex items-center gap-1">
-                                  <CheckCircle2 className="w-3 h-3" /> Ingredientes listos
-                                </span>
-                              ) : (
-                                <span className="text-rose-600 font-medium flex items-center gap-1">
-                                  <AlertCircle className="w-3 h-3" /> Faltan insumos
-                                </span>
-                              )}
-                            </span>
-
-                            <button
-                              onClick={() => handleCocinarPlato(item)}
-                              disabled={!stockSuficiente}
-                              className="px-2.5 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:bg-stone-200 disabled:text-stone-400 text-white font-medium text-[11px] rounded-lg transition flex items-center gap-1 shadow-2xs cursor-pointer disabled:cursor-not-allowed"
-                            >
-                              <ChefHat className="w-3 h-3" />
-                              <span>Cocinar plato</span>
-                            </button>
+                          <div className="pt-2 border-t border-stone-200 space-y-2">
+                            {ingredientesReceta.length === 0 && <p className="text-xs text-amber-700">Por verificar: sin ingredientes registrados.</p>}
+                            {ingredientesReceta.map((ing) => {
+                              const alimento = alimentos.find((a) => a.id === ing.alimento_id);
+                              return <p key={ing.id} className="text-xs text-stone-600">
+                                {alimento?.nombre || 'Ingrediente'}: {ing.cantidad_requerida} {ing.unidad_medida || '—'} · {disponibilidadIngrediente(ing, alimento)}
+                              </p>;
+                            })}
+                            {admin && <button disabled={ocupado} onClick={() => handleConfirmar(item, confirmada)}
+                              className="px-3 py-1 rounded-lg bg-emerald-600 text-white text-xs disabled:opacity-50">
+                              {confirmada ? 'Retirar confirmación' : 'Confirmar comida'}
+                            </button>}
                           </div>
                         </div>
                       );

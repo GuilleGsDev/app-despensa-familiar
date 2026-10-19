@@ -1,11 +1,13 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
 import { Clock, Users, PlusCircle, Loader2, ChefHat, Trash2, Edit3, X } from 'lucide-react';
 
-export default function RecetasView() {
-  const [recetas, setRecetas] = useState([]);
-  const [alimentos, setAlimentos] = useState([]);
-  const [loading, setLoading] = useState(true);
+import { UNIDADES_RECETA, puedeEditarReceta } from '../lib/familia';
+import { useRealtimeQuery } from '../lib/useRealtimeQuery';
+
+const TABLAS_RECETAS = ['alimentos', 'recetas', 'receta_ingredientes'];
+
+export default function RecetasView({ perfil }) {
   const [mostrarModal, setMostrarModal] = useState(false);
   const [guardando, setGuardando] = useState(false);
   const [idEditando, setIdEditando] = useState(null);
@@ -14,63 +16,36 @@ export default function RecetasView() {
   const [nombre, setNombre] = useState('');
   const [tiempo, setTiempo] = useState(30);
   const [porciones, setPorciones] = useState(2);
-  const [ingredientes, setIngredientes] = useState([{ alimento_id: '', cantidad_requerida: 1 }]);
+  const [ingredientes, setIngredientes] = useState([{ alimento_id: '', cantidad_requerida: 1, unidad_medida: 'taza' }]);
 
-  const cargarDatos = useCallback(() => {
-    return supabase
-      .from('alimentos')
-      .select('*')
-      .order('nombre', { ascending: true })
-      .then(async ({ data: dataAlimentos }) => {
-        if (dataAlimentos) setAlimentos(dataAlimentos);
-
-        const { data: dataRecetas } = await supabase
-          .from('recetas')
-          .select(`
-            *,
-            receta_ingredientes (
-              id,
-              alimento_id,
-              cantidad_requerida,
-              alimentos (
-                id,
-                nombre,
-                unidad_medida
-              )
-            )
-          `)
-          .order('nombre', { ascending: true });
-
-        if (dataRecetas) setRecetas(dataRecetas);
-        setLoading(false);
-      });
+  const consultarRecetas = useCallback(async () => {
+    const [alimentos, recetas] = await Promise.all([
+      supabase.from('alimentos').select('*').order('nombre'),
+      supabase.from('recetas').select(`*, receta_ingredientes (
+        id, alimento_id, cantidad_requerida, unidad_medida,
+        alimentos (id, nombre, unidad_medida)
+      )`).eq('archivada', false).order('nombre'),
+    ]);
+    if (alimentos.error) throw alimentos.error;
+    if (recetas.error) throw recetas.error;
+    return { alimentos: alimentos.data, recetas: recetas.data };
   }, []);
-
-  useEffect(() => {
-    cargarDatos();
-
-    const channel = supabase
-      .channel('recetas_catalog_realtime')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'alimentos' }, () => cargarDatos())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'recetas' }, () => cargarDatos())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'receta_ingredientes' }, () => cargarDatos())
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [cargarDatos]);
+  const { data, error, loading, refresh: cargarDatos } = useRealtimeQuery(
+    consultarRecetas, TABLAS_RECETAS, 'recetas_catalog_realtime'
+  );
+  const { alimentos = [], recetas = [] } = data || {};
 
   const abrirModalCrear = () => {
     setIdEditando(null);
     setNombre('');
     setTiempo(30);
     setPorciones(2);
-    setIngredientes([{ alimento_id: '', cantidad_requerida: 1 }]);
+    setIngredientes([{ alimento_id: '', cantidad_requerida: 1, unidad_medida: 'taza' }]);
     setMostrarModal(true);
   };
 
   const abrirModalEditar = (receta) => {
+    if (!puedeEditarReceta(perfil, receta)) return;
     setIdEditando(receta.id);
     setNombre(receta.nombre || '');
     setTiempo(receta.tiempo_minutos || 30);
@@ -81,22 +56,21 @@ export default function RecetasView() {
         receta.receta_ingredientes.map((ri) => ({
           alimento_id: ri.alimento_id,
           cantidad_requerida: ri.cantidad_requerida,
+          unidad_medida: ri.unidad_medida || '',
         }))
       );
     } else {
-      setIngredientes([{ alimento_id: '', cantidad_requerida: 1 }]);
+      setIngredientes([{ alimento_id: '', cantidad_requerida: 1, unidad_medida: 'taza' }]);
     }
     setMostrarModal(true);
   };
 
   const agregarFilaIngrediente = () => {
-    setIngredientes([...ingredientes, { alimento_id: '', cantidad_requerida: 1 }]);
+    setIngredientes([...ingredientes, { alimento_id: '', cantidad_requerida: 1, unidad_medida: 'taza' }]);
   };
 
   const actualizarIngrediente = (index, campo, valor) => {
-    const list = [...ingredientes];
-    list[index][campo] = valor;
-    setIngredientes(list);
+    setIngredientes((prev) => prev.map((ing, i) => i === index ? { ...ing, [campo]: valor } : ing));
   };
 
   const eliminarFilaIngrediente = (index) => {
@@ -105,62 +79,25 @@ export default function RecetasView() {
 
   const handleGuardarReceta = async (e) => {
     e.preventDefault();
-    if (!nombre.trim() || ingredientes.some((i) => !i.alimento_id)) {
+    if (!nombre.trim() || ingredientes.some((i) => !i.alimento_id || !i.unidad_medida || Number(i.cantidad_requerida) <= 0)) {
       alert('Por favor selecciona todos los alimentos requeridos.');
       return;
     }
 
     setGuardando(true);
     try {
-      if (idEditando) {
-        // Actualizar receta existente
-        const { error: recError } = await supabase
-          .from('recetas')
-          .update({
-            nombre: nombre.trim(),
-            tiempo_minutos: Number(tiempo),
-            porciones: Number(porciones),
-          })
-          .eq('id', idEditando);
-
-        if (recError) throw recError;
-
-        // Reemplazar ingredientes
-        await supabase.from('receta_ingredientes').delete().eq('receta_id', idEditando);
-
-        const payloadIngredientes = ingredientes.map((i) => ({
-          receta_id: idEditando,
-          alimento_id: i.alimento_id,
-          cantidad_requerida: Number(i.cantidad_requerida),
-        }));
-
-        const { error: ingError } = await supabase
-          .from('receta_ingredientes')
-          .insert(payloadIngredientes);
-
-        if (ingError) throw ingError;
-      } else {
-        // Crear nueva receta
-        const { data: recData, error: recError } = await supabase
-          .from('recetas')
-          .insert([{ nombre: nombre.trim(), tiempo_minutos: Number(tiempo), porciones: Number(porciones) }])
-          .select()
-          .single();
-
-        if (recError) throw recError;
-
-        const payloadIngredientes = ingredientes.map((i) => ({
-          receta_id: recData.id,
-          alimento_id: i.alimento_id,
-          cantidad_requerida: Number(i.cantidad_requerida),
-        }));
-
-        const { error: ingError } = await supabase
-          .from('receta_ingredientes')
-          .insert(payloadIngredientes);
-
-        if (ingError) throw ingError;
-      }
+      const { error } = await supabase.rpc('guardar_receta_v2', {
+        p_id: idEditando == null ? null : String(idEditando),
+        p_nombre: nombre.trim(),
+        p_tiempo: Number(tiempo),
+        p_porciones: Number(porciones),
+        p_ingredientes: ingredientes.map((ing) => ({
+          alimento_id: ing.alimento_id,
+          cantidad_requerida: Number(ing.cantidad_requerida),
+          unidad_medida: ing.unidad_medida,
+        })),
+      });
+      if (error) throw error;
 
       setMostrarModal(false);
       cargarDatos();
@@ -171,20 +108,17 @@ export default function RecetasView() {
     }
   };
 
-  const eliminarReceta = async (id, nombreReceta) => {
-    if (!confirm(`¿Eliminar la receta "${nombreReceta}"?`)) return;
-
-    setRecetas((prev) => prev.filter((r) => r.id !== id));
-    const { error } = await supabase.from('recetas').delete().eq('id', id);
-
-    if (error) {
-      alert(`Error al eliminar: ${error.message}`);
-      cargarDatos();
-    }
+  const archivarReceta = async (receta) => {
+    if (!puedeEditarReceta(perfil, receta)) return;
+    if (!confirm(`¿Archivar "${receta.nombre}"? Se conservará en las propuestas existentes.`)) return;
+    const { error, data } = await supabase.from('recetas').update({ archivada: true }).eq('id', receta.id).select('id');
+    if (error || !data?.length) alert(error?.message || 'No tienes permiso para archivar esta receta.');
+    await cargarDatos();
   };
 
   return (
     <div className="space-y-4">
+      {error && <p role="alert" className="text-sm text-rose-700">No se pudieron cargar las recetas: {error} <button onClick={cargarDatos}>Reintentar</button></p>}
       {/* Barra superior */}
       <div className="flex items-center justify-between">
         <h1 className="text-lg font-bold text-stone-900">Catálogo de Recetas</h1>
@@ -231,7 +165,7 @@ export default function RecetasView() {
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1">
+                {puedeEditarReceta(perfil, receta) && <div className="flex items-center gap-1">
                   <button
                     onClick={() => abrirModalEditar(receta)}
                     className="p-1.5 text-stone-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition"
@@ -241,13 +175,13 @@ export default function RecetasView() {
                   </button>
 
                   <button
-                    onClick={() => eliminarReceta(receta.id, receta.nombre)}
+                    onClick={() => archivarReceta(receta)}
                     className="p-1.5 text-stone-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition"
-                    title="Eliminar receta"
+                    title="Archivar receta"
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>
-                </div>
+                </div>}
               </div>
 
               {/* Ingredientes de la receta */}
@@ -260,7 +194,7 @@ export default function RecetasView() {
                     <div key={ri.id} className="flex justify-between items-center text-stone-700">
                       <span>{ri.alimentos?.nombre || 'Alimento no encontrado'}</span>
                       <span className="font-mono text-stone-500">
-                        {ri.cantidad_requerida} {ri.alimentos?.unidad_medida}
+                        {ri.cantidad_requerida} {ri.unidad_medida || 'Por verificar'}
                       </span>
                     </div>
                   ))
@@ -345,7 +279,7 @@ export default function RecetasView() {
                         required
                         value={ing.alimento_id}
                         onChange={(e) => actualizarIngrediente(idx, 'alimento_id', e.target.value)}
-                        className="flex-1 px-2 py-1.5 text-xs bg-stone-50 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
+                        className="min-w-0 flex-1 px-2 py-1.5 text-xs bg-stone-50 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
                       >
                         <option value="">Selecciona alimento</option>
                         {alimentos.map((a) => (
@@ -365,6 +299,13 @@ export default function RecetasView() {
                         onChange={(e) => actualizarIngrediente(idx, 'cantidad_requerida', e.target.value)}
                         className="w-16 px-2 py-1.5 text-xs text-center bg-stone-50 border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-emerald-500"
                       />
+
+                      <select aria-label="Unidad del ingrediente" required value={ing.unidad_medida}
+                        onChange={(e) => actualizarIngrediente(idx, 'unidad_medida', e.target.value)}
+                        className="w-20 px-1 py-1.5 text-xs border border-stone-200 rounded-lg">
+                        <option value="">Unidad</option>
+                        {UNIDADES_RECETA.map((u) => <option key={u} value={u}>{u}</option>)}
+                      </select>
 
                       {ingredientes.length > 1 && (
                         <button
